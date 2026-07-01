@@ -720,6 +720,77 @@
       border-left: 3px solid var(--warn-line);
     }
 
+    /* ───── Info Deteksi Otomatis (NIM prefix, Mata Kuliah, Semester) ───── */
+    .detect-info {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--rule);
+      border: 1px solid var(--rule);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+
+    @media (max-width:640px) {
+      .detect-info {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .detect-info .di-cell {
+      background: var(--bg-card);
+      padding: 14px 16px;
+    }
+
+    .detect-info .di-lbl {
+      font-family: 'Open Sans', sans-serif;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--ink-soft);
+      margin-bottom: 6px;
+    }
+
+    .detect-info .di-val {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--ink);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .detect-info .di-val .di-sub {
+      display: block;
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--ink-soft);
+      margin-top: 2px;
+    }
+
+    .detect-info .di-cell.mismatch {
+      background: var(--warn-bg);
+    }
+
+    .detect-info .di-cell.mismatch .di-val {
+      color: var(--warn-ink);
+    }
+
+    .detect-info .di-badge {
+      display: inline-block;
+      background: var(--seb);
+      color: #fff;
+      font-weight: 700;
+      font-size: 12.5px;
+      padding: 3px 10px;
+      border-radius: 6px;
+      letter-spacing: .02em;
+    }
+
+    .detect-info .di-badge.di-badge-muted {
+      background: var(--ink-soft);
+    }
+
     details.preview-toggle {
       margin-top: 8px;
     }
@@ -1120,6 +1191,8 @@
         <p class="panel-title">Hasil Konversi</p>
         <p class="panel-desc">Tinjau ringkasan di bawah sebelum mengunduh berkas siap unggah ke sistem OBE.</p>
 
+        <div class="detect-info" id="detect-info"></div>
+
         <div class="status-banner" id="status-banner"></div>
 
         <div class="summary-grid" id="summary-grid"></div>
@@ -1315,11 +1388,119 @@
       return result;
     }
 
+    /* ─────────────────────────────────────────────────────────────
+       DETEKSI OTOMATIS FORMAT & PREFIX NIM (multi-Prodi/Fakultas)
+       ─────────────────────────────────────────────────────────────
+       Sebelumnya prefix NIM ("F1") di-hardcode, sehingga Converter
+       ini HANYA bisa dipakai oleh Prodi yang NIM-nya berawalan "F1".
+       Prodi/Fakultas lain (mis. berawalan L, B, K, dll) akan membuat
+       SEMUA baris ter-skip tanpa pesan error apa pun — sangat susah
+       di-debug oleh pengguna awam.
+
+       Solusinya: prefix NIM dipelajari otomatis dari data yang
+       diunggah pengguna, bukan ditulis manual di kode:
+         1) looksLikeNIMFormat() — cek bentuk umum NIM PT di Indonesia
+            (huruf di depan + digit, panjang wajar), TANPA menyebut
+            prefix spesifik apa pun.
+         2) primeNIMDetection() — dari seluruh nilai mentah di kolom
+            NIM berkas ANUMS, hitung frekuensi tiap kandidat prefix,
+            lalu ambil yang paling dominan/mayoritas. Butuh minimal
+            NIM_PREFIX_MIN_SAMPLES kemunculan supaya tidak salah
+            tebak gara-gara 1-2 baris data kotor/typo.
+         3) isNIM() lalu memvalidasi berdasar prefix hasil deteksi
+            tsb — otomatis menyesuaikan diri ke Prodi manapun.
+    ───────────────────────────────────────────────────────────── */
+    let DETECTED_NIM_PREFIX = null;
+    const NIM_PREFIX_MIN_SAMPLES = 5; // minimal kemunculan sebelum prefix "dipercaya"
+
+    function looksLikeNIMFormat(val) {
+      if (val === undefined || val === null || val === '') return false;
+      const s = String(val).trim().toUpperCase();
+      // Pola umum NIM PT di Indonesia: 1-3 huruf kode fakultas/prodi
+      // diikuti digit, total panjang wajar. Tidak menyebut huruf spesifik.
+      return /^[A-Z]{1,3}\d{5,}$/.test(s) && s.length >= 8 && s.length <= 15;
+    }
+
+    function extractPrefixCandidate(val) {
+      const s = String(val).trim().toUpperCase();
+      const m = s.match(/^[A-Z]{1,3}/);
+      return m ? m[0] : null;
+    }
+
+    /**
+     * Pelajari prefix NIM sebenarnya dari kumpulan nilai mentah (mis.
+     * seluruh isi kolom NIM pada berkas ANUMS). Dipanggil sekali di awal
+     * proses konversi sebelum isNIM() dipakai untuk memfilter baris.
+     */
+    function primeNIMDetection(rawValues) {
+      const counts = {};
+      for (const raw of rawValues) {
+        if (!looksLikeNIMFormat(raw)) continue;
+        const prefix = extractPrefixCandidate(raw);
+        if (!prefix) continue;
+        counts[prefix] = (counts[prefix] || 0) + 1;
+      }
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      DETECTED_NIM_PREFIX = (sorted.length && sorted[0][1] >= NIM_PREFIX_MIN_SAMPLES)
+        ? sorted[0][0]
+        : null; // data tidak cukup meyakinkan -> fallback ke pengecekan bentuk umum saja
+      return DETECTED_NIM_PREFIX;
+    }
+
     function isNIM(val) {
-      if (typeof val !== 'string') return false;
-      const s = val.trim();
-      return s.startsWith('F1') && s.length >= 10;
-    } // bisa dirubah sesuai dengan awalan NIM disini
+      if (!looksLikeNIMFormat(val)) return false;
+      if (DETECTED_NIM_PREFIX) {
+        return String(val).trim().toUpperCase().startsWith(DETECTED_NIM_PREFIX);
+      }
+      return true; // belum ada prefix dominan yang terdeteksi -> terima semua yang berbentuk NIM
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       DETEKSI INFO MATA KULIAH & SEMESTER (untuk panel Validasi)
+       ─────────────────────────────────────────────────────────────
+       Banyak berkas ANUMS/template OBE punya baris header berisi
+       "Mata Kuliah : <kode> - <nama>" dan "Semester : <tahun> <ganjil/
+       genap>" di beberapa baris pertama. Fungsi ini mengambil nilainya
+       secara otomatis (tanpa asumsi posisi kolom tetap) supaya dapat
+       ditampilkan di langkah Validasi — end-user bisa langsung cek
+       apakah berkas yang diunggah memang untuk mata kuliah & semester
+       yang benar, tanpa perlu membuka Excel-nya lagi satu per satu.
+    ───────────────────────────────────────────────────────────── */
+    function findLabeledValue(ws, maxRow, maxCol, labelKeyword, scanRows = 15) {
+      const rows = Math.min(maxRow, scanRows);
+      for (let r = 1; r <= rows; r++) {
+        for (let c = 1; c <= maxCol; c++) {
+          const raw = cellVal(ws, r, c);
+          if (raw === undefined || raw === null) continue;
+          const s = String(raw).trim();
+          if (!s.toLowerCase().startsWith(labelKeyword)) continue;
+
+          // Kasus 1: label & value dalam satu sel yang sama, dipisah ":"
+          // mis. "Mata Kuliah : PSI3241316 - Diri dalam Kehidupan Sosial"
+          const idx = s.indexOf(':');
+          if (idx !== -1 && idx < s.length - 1) {
+            const val = s.slice(idx + 1).trim();
+            if (val) return val;
+          }
+
+          // Kasus 2: label sendirian di satu sel, value ada di sel-sel
+          // berikutnya pada baris yang sama (lewati sel kosong / ":").
+          for (let c2 = c + 1; c2 <= maxCol; c2++) {
+            const s2 = String(cellVal(ws, r, c2) ?? '').trim();
+            if (s2 === '' || s2 === ':') continue;
+            return s2;
+          }
+        }
+      }
+      return null;
+    }
+
+    function detectCourseInfo(ws, maxRow, maxCol) {
+      return {
+        mataKuliah: findLabeledValue(ws, maxRow, maxCol, 'mata kuliah'),
+        semester: findLabeledValue(ws, maxRow, maxCol, 'semester'),
+      };
+    }
 
     function cellVal(ws, row, col) {
       const addr = colLetter(col) + row;
@@ -1364,6 +1545,16 @@
         throw new Error("Kolom 'NIM' atau 'Nilai Angka' tidak ditemukan pada berkas ANUMS.");
       }
 
+      // Kumpulkan seluruh nilai mentah kolom NIM dulu (belum difilter),
+      // lalu pelajari prefix-nya. Dengan begini, isNIM() di bawah dan
+      // seluruh proses selanjutnya (termasuk baca template OBE) otomatis
+      // menyesuaikan diri ke Prodi/Fakultas manapun yang meng-upload berkas.
+      const rawNimValues = [];
+      for (let r = headerRow + 1; r <= maxRow; r++) {
+        rawNimValues.push(cellVal(ws, r, nimCol));
+      }
+      primeNIMDetection(rawNimValues);
+
       const data = {};
       for (let r = headerRow + 1; r <= maxRow; r++) {
         const nimVal = cellVal(ws, r, nimCol);
@@ -1372,6 +1563,13 @@
         const naVal = cellVal(ws, r, naCol);
         const nilai = (naVal !== undefined && naVal !== null && naVal !== '') ? parseFloat(naVal) : null;
         data[nim] = (nilai === null || isNaN(nilai)) ? null : nilai;
+      }
+      if (Object.keys(data).length === 0) {
+        throw new Error(
+          "Tidak ada baris dengan format NIM yang valid di kolom NIM berkas ANUMS. " +
+          "Pastikan kolom NIM berisi kombinasi huruf di depan (kode Fakultas/Prodi) " +
+          "diikuti angka, mis. 'L100XXXXXX' atau 'B100XXXXXX'."
+        );
       }
       return data;
     }
@@ -1474,6 +1672,12 @@
         const nama = String(cellVal(ws, row, struct.namaCol) ?? '').trim();
         students.push({ nim: String(nim).trim(), nama, rowInTemplate: row });
       }
+      if (students.length === 0) {
+        throw new Error(
+          "Tidak ada baris mahasiswa dengan format NIM yang valid pada template OBE. " +
+          "Periksa apakah kolom NIM template sama formatnya dengan berkas ANUMS."
+        );
+      }
       return students;
     }
 
@@ -1539,12 +1743,18 @@
       // Read ANUMS (SheetJS — read-only, safe)
       const anumsData = readAnums(anumsWB);
 
+      // Info Mata Kuliah & Semester dari berkas ANUMS (untuk panel Validasi)
+      const anumsWs = anumsWB.Sheets[anumsWB.SheetNames[0]];
+      const { r: anumsMaxRow, c: anumsMaxCol } = sheetMaxRowCol(anumsWs);
+      const anumsCourseInfo = detectCourseInfo(anumsWs, anumsMaxRow, anumsMaxCol);
+
       // Read template structure (SheetJS — read-only, safe)
       if (!templateWB.Sheets['nilai']) {
         throw new Error(`Sheet 'nilai' tidak ditemukan pada template. Sheet tersedia: ${templateWB.SheetNames.join(', ')}`);
       }
       const ws = templateWB.Sheets['nilai'];
       const { r: maxRow, c: maxCol } = sheetMaxRowCol(ws);
+      const templateCourseInfo = detectCourseInfo(ws, maxRow, maxCol);
       const struct = detectOBEStructure(ws, maxRow, maxCol);
       const students = readTemplateStudents(ws, struct, maxRow);
 
@@ -1583,6 +1793,8 @@
         semuaDalamToleransi: diffs.every(d => d <= 0.25),
         cpmkLabels: struct.cpmkLabels,
         weights: struct.weights,
+        nimPrefix: DETECTED_NIM_PREFIX,
+        courseInfo: { anums: anumsCourseInfo, template: templateCourseInfo },
       };
 
       // Preview rows
@@ -1771,7 +1983,56 @@
       }
     });
 
+    function escapeHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    /**
+     * Render kartu info deteksi otomatis di awal panel Validasi:
+     * prefix NIM yang dikenali + Mata Kuliah & Semester dari kedua
+     * berkas. Kalau info Mata Kuliah/Semester berbeda antara berkas
+     * ANUMS dan template, tampilkan sebagai peringatan supaya
+     * pengguna tahu sebelum mengunduh hasil yang salah.
+     */
+    function renderDetectInfo(report) {
+      const el = document.getElementById('detect-info');
+      const { anums, template } = report.courseInfo;
+
+      const nimBadge = report.nimPrefix
+        ? `<span class="di-badge">${escapeHtml(report.nimPrefix)}</span>`
+        : `<span class="di-badge di-badge-muted">Tanpa prefix dominan</span>`;
+
+      function fieldCell(label, valAnums, valTemplate) {
+        const mismatch = valAnums && valTemplate &&
+          valAnums.trim().toLowerCase() !== valTemplate.trim().toLowerCase();
+        const shown = valTemplate || valAnums;
+        let html = `<div class="di-lbl">${label}</div>`;
+        if (!shown) {
+          html += `<div class="di-val">— tidak terdeteksi</div>`;
+        } else if (mismatch) {
+          html += `<div class="di-val">${escapeHtml(valTemplate)}
+            <span class="di-sub">⚠ Berbeda dengan ANUMS: "${escapeHtml(valAnums)}"</span></div>`;
+        } else {
+          html += `<div class="di-val">${escapeHtml(shown)}</div>`;
+        }
+        return `<div class="di-cell${mismatch ? ' mismatch' : ''}">${html}</div>`;
+      }
+
+      el.innerHTML = `
+        <div class="di-cell">
+          <div class="di-lbl">Prefix NIM Terdeteksi</div>
+          <div class="di-val">${nimBadge}</div>
+        </div>
+        ${fieldCell('Mata Kuliah', anums.mataKuliah, template.mataKuliah)}
+        ${fieldCell('Semester', anums.semester, template.semester)}
+      `;
+    }
+
     function renderReport(report, previewRows) {
+      renderDetectInfo(report);
+
       // Status banner
       const banner = document.getElementById('status-banner');
       if (report.semuaDalamToleransi) {
